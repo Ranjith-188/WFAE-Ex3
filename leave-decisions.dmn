@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/" xmlns:dmndi="https://www.omg.org/spec/DMN/20191111/DMNDI/" xmlns:dc="http://www.omg.org/spec/DMN/20180521/DC/" xmlns:di="http://www.omg.org/spec/DMN/20180521/DI/" xmlns:modeler="http://camunda.org/schema/modeler/1.0" id="Definitions_LeaveDecisions" name="Leave Decisions" namespace="http://camunda.org/schema/1.0/dmn" exporter="Camunda Modeler" exporterVersion="5.30.0" modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.7.0">
+
+  <!-- Decision A: balance check (UNIQUE) -->
+  <decision id="leave-balance-check" name="Leave Balance Check">
+    <variable id="Variable_BalanceStatus" name="balanceStatus" typeRef="string" />
+    <informationRequirement id="InfoReq_A_Days">
+      <requiredInput href="#InputData_Days" />
+    </informationRequirement>
+    <informationRequirement id="InfoReq_A_Balance">
+      <requiredInput href="#InputData_AvailableBalance" />
+    </informationRequirement>
+    <decisionTable id="DecisionTable_Balance" hitPolicy="UNIQUE">
+      <input id="Input_Shortfall" label="Shortfall (days - availableBalance)">
+        <inputExpression id="InputExpression_Shortfall" typeRef="number">
+          <text>days - availableBalance</text>
+        </inputExpression>
+      </input>
+      <output id="Output_BalanceStatus" label="Balance Status" name="balanceStatus" typeRef="string" />
+      <rule id="Rule_Insufficient">
+        <description>Requested days exceed available balance</description>
+        <inputEntry id="IE_Insufficient"><text>&gt; 0</text></inputEntry>
+        <outputEntry id="OE_Insufficient"><text>"INSUFFICIENT"</text></outputEntry>
+      </rule>
+      <rule id="Rule_Sufficient">
+        <description>Balance covers the request</description>
+        <inputEntry id="IE_Sufficient"><text>&lt;= 0</text></inputEntry>
+        <outputEntry id="OE_Sufficient"><text>"SUFFICIENT"</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+
+  <!-- Decision B: routing (UNIQUE) - called by the Business Rule Task -->
+  <decision id="leave-routing-decision" name="Leave Routing Decision">
+    <informationRequirement id="InfoReq_B_Balance">
+      <requiredDecision href="#leave-balance-check" />
+    </informationRequirement>
+    <informationRequirement id="InfoReq_B_LeaveType">
+      <requiredInput href="#InputData_LeaveType" />
+    </informationRequirement>
+    <informationRequirement id="InfoReq_B_Days">
+      <requiredInput href="#InputData_Days" />
+    </informationRequirement>
+    <decisionTable id="DecisionTable_Routing" hitPolicy="UNIQUE">
+      <input id="Input_BalanceStatus" label="Balance Status">
+        <inputExpression id="InputExpression_BalanceStatus" typeRef="string">
+          <text>balanceStatus</text>
+        </inputExpression>
+      </input>
+      <input id="Input_LeaveType" label="Leave Type">
+        <inputExpression id="InputExpression_LeaveType" typeRef="string">
+          <text>leaveType</text>
+        </inputExpression>
+      </input>
+      <input id="Input_Days" label="Days">
+        <inputExpression id="InputExpression_Days" typeRef="number">
+          <text>days</text>
+        </inputExpression>
+      </input>
+      <output id="Output_Routing" label="Routing" name="routing" typeRef="string" />
+      <output id="Output_Reason" label="Reason" name="reason" typeRef="string" />
+
+      <rule id="Rule_RejectBalance">
+        <inputEntry id="R1_I1"><text>"INSUFFICIENT"</text></inputEntry>
+        <inputEntry id="R1_I2"><text></text></inputEntry>
+        <inputEntry id="R1_I3"><text></text></inputEntry>
+        <outputEntry id="R1_O1"><text>"REJECT_INSUFFICIENT_BALANCE"</text></outputEntry>
+        <outputEntry id="R1_O2"><text>"Insufficient Balance"</text></outputEntry>
+      </rule>
+      <rule id="Rule_SickAuto">
+        <inputEntry id="R2_I1"><text>"SUFFICIENT"</text></inputEntry>
+        <inputEntry id="R2_I2"><text>"Sick"</text></inputEntry>
+        <inputEntry id="R2_I3"><text>&lt;= 3</text></inputEntry>
+        <outputEntry id="R2_O1"><text>"AUTO_APPROVE"</text></outputEntry>
+        <outputEntry id="R2_O2"><text>"Sick leave within 3 days"</text></outputEntry>
+      </rule>
+      <rule id="Rule_SickLong">
+        <inputEntry id="R3_I1"><text>"SUFFICIENT"</text></inputEntry>
+        <inputEntry id="R3_I2"><text>"Sick"</text></inputEntry>
+        <inputEntry id="R3_I3"><text>&gt; 3</text></inputEntry>
+        <outputEntry id="R3_O1"><text>"MANAGER_APPROVAL"</text></outputEntry>
+        <outputEntry id="R3_O2"><text>"Sick leave exceeds 3 days"</text></outputEntry>
+      </rule>
+      <rule id="Rule_CasualEarned">
+        <inputEntry id="R4_I1"><text>"SUFFICIENT"</text></inputEntry>
+        <inputEntry id="R4_I2"><text>"Casual","Earned"</text></inputEntry>
+        <inputEntry id="R4_I3"><text></text></inputEntry>
+        <outputEntry id="R4_O1"><text>"MANAGER_APPROVAL"</text></outputEntry>
+        <outputEntry id="R4_O2"><text>"Requires manager approval"</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+
+  <inputData id="InputData_LeaveType" name="leaveType" />
+  <inputData id="InputData_Days" name="days" />
+  <inputData id="InputData_AvailableBalance" name="availableBalance" />
+
+  <dmndi:DMNDI>
+    <dmndi:DMNDiagram id="DMNDiagram_1">
+      <dmndi:DMNShape id="DMNShape_Routing" dmnElementRef="leave-routing-decision">
+        <dc:Bounds height="80" width="180" x="300" y="100" />
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_Balance" dmnElementRef="leave-balance-check">
+        <dc:Bounds height="80" width="180" x="550" y="100" />
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_LeaveType" dmnElementRef="InputData_LeaveType">
+        <dc:Bounds height="45" width="125" x="200" y="300" />
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_Days" dmnElementRef="InputData_Days">
+        <dc:Bounds height="45" width="125" x="400" y="300" />
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_AvailableBalance" dmnElementRef="InputData_AvailableBalance">
+        <dc:Bounds height="45" width="125" x="600" y="300" />
+      </dmndi:DMNShape>
+
+      <dmndi:DMNEdge id="DMNEdge_B_Balance" dmnElementRef="InfoReq_B_Balance">
+        <di:waypoint x="550" y="140" /><di:waypoint x="480" y="140" />
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_B_LeaveType" dmnElementRef="InfoReq_B_LeaveType">
+        <di:waypoint x="262" y="300" /><di:waypoint x="350" y="180" />
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_B_Days" dmnElementRef="InfoReq_B_Days">
+        <di:waypoint x="450" y="300" /><di:waypoint x="410" y="180" />
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_A_Days" dmnElementRef="InfoReq_A_Days">
+        <di:waypoint x="490" y="300" /><di:waypoint x="600" y="180" />
+      </dmndi:DMNEdge>
+      <dmndi:DMNEdge id="DMNEdge_A_Balance" dmnElementRef="InfoReq_A_Balance">
+        <di:waypoint x="662" y="300" /><di:waypoint x="650" y="180" />
+      </dmndi:DMNEdge>
+    </dmndi:DMNDiagram>
+  </dmndi:DMNDI>
+</definitions>

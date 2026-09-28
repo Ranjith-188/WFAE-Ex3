@@ -1,0 +1,294 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" xmlns:modeler="http://camunda.org/schema/modeler/1.0" id="Definitions_LeaveRequest" targetNamespace="http://bpmn.io/schema/bpmn" exporter="Camunda Modeler" exporterVersion="5.30.0" modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.7.0">
+  <bpmn:process id="leave-request-approval" name="Leave Request Approval" isExecutable="true">
+
+    <bpmn:startEvent id="StartEvent_LeaveSubmitted" name="Leave Request Submitted">
+      <bpmn:outgoing>Flow_1</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <!-- 1. Fetch balance + manager (system lookup) -->
+    <bpmn:serviceTask id="Task_FetchBalance" name="Fetch Leave Balance">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="fetch-leave-balance" retries="3" />
+        <zeebe:ioMapping>
+          <zeebe:input source="= employeeId" target="employeeId" />
+          <zeebe:input source="= leaveType" target="leaveType" />
+          <zeebe:output source="= availableBalance" target="availableBalance" />
+          <zeebe:output source="= managerId" target="managerId" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_1</bpmn:incoming>
+      <bpmn:outgoing>Flow_2</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <!-- 2. DMN (DRD: leave-balance-check -> leave-routing-decision) -->
+    <bpmn:businessRuleTask id="Task_EvaluateRequest" name="Evaluate Leave Request">
+      <bpmn:extensionElements>
+        <zeebe:calledDecision decisionId="leave-routing-decision" resultVariable="routingDecision" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_2</bpmn:incoming>
+      <bpmn:outgoing>Flow_3</bpmn:outgoing>
+    </bpmn:businessRuleTask>
+
+    <bpmn:exclusiveGateway id="Gateway_Routing" name="Routing outcome?" default="Flow_ToManager">
+      <bpmn:incoming>Flow_3</bpmn:incoming>
+      <bpmn:outgoing>Flow_AutoApprove</bpmn:outgoing>
+      <bpmn:outgoing>Flow_ToManager</bpmn:outgoing>
+      <bpmn:outgoing>Flow_InsufficientBalance</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <!-- 3. Manager review (human) -->
+    <bpmn:userTask id="Task_ManagerReview" name="Manager Review">
+      <bpmn:extensionElements>
+        <zeebe:userTask />
+        <zeebe:assignmentDefinition assignee="= managerId" />
+        <zeebe:ioMapping>
+          <zeebe:output source="= managerDecision" target="managerDecision" />
+          <zeebe:output source="= managerComments" target="managerComments" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ToManager</bpmn:incoming>
+      <bpmn:outgoing>Flow_ReviewDone</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:exclusiveGateway id="Gateway_ManagerDecision" name="Manager decision?" default="Flow_Rejected">
+      <bpmn:incoming>Flow_ReviewDone</bpmn:incoming>
+      <bpmn:outgoing>Flow_Approved</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Rejected</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <bpmn:exclusiveGateway id="Gateway_Merge">
+      <bpmn:incoming>Flow_AutoApprove</bpmn:incoming>
+      <bpmn:incoming>Flow_Approved</bpmn:incoming>
+      <bpmn:outgoing>Flow_MergeToHR</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <!-- 4. Approved path -->
+    <bpmn:serviceTask id="Task_RecordHR" name="Send to HR / Record Leave">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="record-leave-hr" retries="3" />
+        <zeebe:ioMapping>
+          <zeebe:input source="= if routingDecision.routing = &#34;AUTO_APPROVE&#34; then &#34;AUTO&#34; else managerId" target="approvedBy" />
+          <zeebe:output source="= hrRecordId" target="hrRecordId" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_MergeToHR</bpmn:incoming>
+      <bpmn:outgoing>Flow_HRToBalance</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:serviceTask id="Task_UpdateBalance" name="Update Leave Balance">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="update-leave-balance" retries="3" />
+        <zeebe:ioMapping>
+          <zeebe:output source="= newBalance" target="newBalance" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_HRToBalance</bpmn:incoming>
+      <bpmn:outgoing>Flow_BalanceToNotify</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <!-- Re-validation at update time ("at any point" balance rule) -->
+    <bpmn:boundaryEvent id="Boundary_InsufficientBalance" name="INSUFFICIENT_BALANCE" attachedToRef="Task_UpdateBalance">
+      <bpmn:outgoing>Flow_BoundaryError</bpmn:outgoing>
+      <bpmn:errorEventDefinition id="ErrorEventDefinition_1" errorRef="Error_InsufficientBalance" />
+    </bpmn:boundaryEvent>
+
+    <bpmn:serviceTask id="Task_NotifyApproved" name="Notify Employee - Approved">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="send-notification" retries="3" />
+        <zeebe:ioMapping>
+          <zeebe:input source="= employeeId" target="employeeId" />
+          <zeebe:input source="= &#34;APPROVED&#34;" target="status" />
+          <zeebe:input source="= &#34;Your leave request has been approved.&#34;" target="message" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_BalanceToNotify</bpmn:incoming>
+      <bpmn:outgoing>Flow_NotifyApprovedToEnd</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:endEvent id="End_Approved" name="Leave Approved">
+      <bpmn:incoming>Flow_NotifyApprovedToEnd</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <!-- 5. Rejected by manager -->
+    <bpmn:serviceTask id="Task_NotifyRejected" name="Notify Employee - Rejected">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="send-notification" retries="3" />
+        <zeebe:ioMapping>
+          <zeebe:input source="= employeeId" target="employeeId" />
+          <zeebe:input source="= &#34;REJECTED&#34;" target="status" />
+          <zeebe:input source="= managerComments" target="message" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Rejected</bpmn:incoming>
+      <bpmn:outgoing>Flow_NotifyRejectedToEnd</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:endEvent id="End_RejectedByManager" name="Rejected by Manager">
+      <bpmn:incoming>Flow_NotifyRejectedToEnd</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <!-- 6. Insufficient balance (early DMN exit or late error) -->
+    <bpmn:serviceTask id="Task_NotifyInsufficient" name="Notify Employee - Insufficient Balance">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="send-notification" retries="3" />
+        <zeebe:ioMapping>
+          <zeebe:input source="= employeeId" target="employeeId" />
+          <zeebe:input source="= &#34;REJECTED&#34;" target="status" />
+          <zeebe:input source="= &#34;Insufficient Balance&#34;" target="message" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_InsufficientBalance</bpmn:incoming>
+      <bpmn:incoming>Flow_BoundaryError</bpmn:incoming>
+      <bpmn:outgoing>Flow_NotifyInsufficientToEnd</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:endEvent id="End_InsufficientBalance" name="Rejected - Insufficient Balance">
+      <bpmn:incoming>Flow_NotifyInsufficientToEnd</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <!-- Sequence flows -->
+    <bpmn:sequenceFlow id="Flow_1" sourceRef="StartEvent_LeaveSubmitted" targetRef="Task_FetchBalance" />
+    <bpmn:sequenceFlow id="Flow_2" sourceRef="Task_FetchBalance" targetRef="Task_EvaluateRequest" />
+    <bpmn:sequenceFlow id="Flow_3" sourceRef="Task_EvaluateRequest" targetRef="Gateway_Routing" />
+
+    <bpmn:sequenceFlow id="Flow_AutoApprove" name="Auto-approve" sourceRef="Gateway_Routing" targetRef="Gateway_Merge">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">= routingDecision.routing = "AUTO_APPROVE"</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_ToManager" name="Manager approval" sourceRef="Gateway_Routing" targetRef="Task_ManagerReview" />
+    <bpmn:sequenceFlow id="Flow_InsufficientBalance" name="Insufficient balance" sourceRef="Gateway_Routing" targetRef="Task_NotifyInsufficient">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">= routingDecision.routing = "REJECT_INSUFFICIENT_BALANCE"</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+
+    <bpmn:sequenceFlow id="Flow_ReviewDone" sourceRef="Task_ManagerReview" targetRef="Gateway_ManagerDecision" />
+    <bpmn:sequenceFlow id="Flow_Approved" name="Approved" sourceRef="Gateway_ManagerDecision" targetRef="Gateway_Merge">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">= managerDecision = "APPROVED"</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Rejected" name="Rejected" sourceRef="Gateway_ManagerDecision" targetRef="Task_NotifyRejected" />
+
+    <bpmn:sequenceFlow id="Flow_MergeToHR" sourceRef="Gateway_Merge" targetRef="Task_RecordHR" />
+    <bpmn:sequenceFlow id="Flow_HRToBalance" sourceRef="Task_RecordHR" targetRef="Task_UpdateBalance" />
+    <bpmn:sequenceFlow id="Flow_BalanceToNotify" sourceRef="Task_UpdateBalance" targetRef="Task_NotifyApproved" />
+    <bpmn:sequenceFlow id="Flow_NotifyApprovedToEnd" sourceRef="Task_NotifyApproved" targetRef="End_Approved" />
+    <bpmn:sequenceFlow id="Flow_BoundaryError" sourceRef="Boundary_InsufficientBalance" targetRef="Task_NotifyInsufficient" />
+    <bpmn:sequenceFlow id="Flow_NotifyRejectedToEnd" sourceRef="Task_NotifyRejected" targetRef="End_RejectedByManager" />
+    <bpmn:sequenceFlow id="Flow_NotifyInsufficientToEnd" sourceRef="Task_NotifyInsufficient" targetRef="End_InsufficientBalance" />
+  </bpmn:process>
+
+  <bpmn:error id="Error_InsufficientBalance" name="Insufficient Balance" errorCode="INSUFFICIENT_BALANCE" />
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="leave-request-approval">
+
+      <bpmndi:BPMNShape id="StartEvent_LeaveSubmitted_di" bpmnElement="StartEvent_LeaveSubmitted">
+        <dc:Bounds x="152" y="282" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="130" y="325" width="80" height="27" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_FetchBalance_di" bpmnElement="Task_FetchBalance">
+        <dc:Bounds x="240" y="260" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_EvaluateRequest_di" bpmnElement="Task_EvaluateRequest">
+        <dc:Bounds x="390" y="260" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_Routing_di" bpmnElement="Gateway_Routing" isMarkerVisible="true">
+        <dc:Bounds x="545" y="275" width="50" height="50" />
+        <bpmndi:BPMNLabel><dc:Bounds x="527" y="332" width="86" height="14" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_ManagerReview_di" bpmnElement="Task_ManagerReview">
+        <dc:Bounds x="660" y="260" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_ManagerDecision_di" bpmnElement="Gateway_ManagerDecision" isMarkerVisible="true">
+        <dc:Bounds x="815" y="275" width="50" height="50" />
+        <bpmndi:BPMNLabel><dc:Bounds x="795" y="245" width="90" height="14" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_Merge_di" bpmnElement="Gateway_Merge" isMarkerVisible="true">
+        <dc:Bounds x="985" y="275" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_RecordHR_di" bpmnElement="Task_RecordHR">
+        <dc:Bounds x="1080" y="260" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_UpdateBalance_di" bpmnElement="Task_UpdateBalance">
+        <dc:Bounds x="1230" y="260" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_NotifyApproved_di" bpmnElement="Task_NotifyApproved">
+        <dc:Bounds x="1380" y="260" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Approved_di" bpmnElement="End_Approved">
+        <dc:Bounds x="1532" y="282" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="1511" y="325" width="78" height="14" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_NotifyRejected_di" bpmnElement="Task_NotifyRejected">
+        <dc:Bounds x="790" y="400" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_RejectedByManager_di" bpmnElement="End_RejectedByManager">
+        <dc:Bounds x="822" y="522" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="800" y="565" width="80" height="27" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_NotifyInsufficient_di" bpmnElement="Task_NotifyInsufficient">
+        <dc:Bounds x="520" y="620" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_InsufficientBalance_di" bpmnElement="End_InsufficientBalance">
+        <dc:Bounds x="552" y="742" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="530" y="785" width="80" height="40" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Boundary_InsufficientBalance_di" bpmnElement="Boundary_InsufficientBalance">
+        <dc:Bounds x="1262" y="322" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="1300" y="365" width="60" height="27" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNEdge id="Flow_1_di" bpmnElement="Flow_1">
+        <di:waypoint x="188" y="300" /><di:waypoint x="240" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_2_di" bpmnElement="Flow_2">
+        <di:waypoint x="340" y="300" /><di:waypoint x="390" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_3_di" bpmnElement="Flow_3">
+        <di:waypoint x="490" y="300" /><di:waypoint x="545" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AutoApprove_di" bpmnElement="Flow_AutoApprove">
+        <di:waypoint x="570" y="275" /><di:waypoint x="570" y="140" /><di:waypoint x="1010" y="140" /><di:waypoint x="1010" y="275" />
+        <bpmndi:BPMNLabel><dc:Bounds x="760" y="122" width="65" height="14" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ToManager_di" bpmnElement="Flow_ToManager">
+        <di:waypoint x="595" y="300" /><di:waypoint x="660" y="300" />
+        <bpmndi:BPMNLabel><dc:Bounds x="598" y="262" width="60" height="27" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_InsufficientBalance_di" bpmnElement="Flow_InsufficientBalance">
+        <di:waypoint x="570" y="325" /><di:waypoint x="570" y="620" />
+        <bpmndi:BPMNLabel><dc:Bounds x="478" y="470" width="80" height="27" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReviewDone_di" bpmnElement="Flow_ReviewDone">
+        <di:waypoint x="760" y="300" /><di:waypoint x="815" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Approved_di" bpmnElement="Flow_Approved">
+        <di:waypoint x="865" y="300" /><di:waypoint x="985" y="300" />
+        <bpmndi:BPMNLabel><dc:Bounds x="900" y="282" width="50" height="14" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Rejected_di" bpmnElement="Flow_Rejected">
+        <di:waypoint x="840" y="325" /><di:waypoint x="840" y="400" />
+        <bpmndi:BPMNLabel><dc:Bounds x="848" y="355" width="44" height="14" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_MergeToHR_di" bpmnElement="Flow_MergeToHR">
+        <di:waypoint x="1035" y="300" /><di:waypoint x="1080" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_HRToBalance_di" bpmnElement="Flow_HRToBalance">
+        <di:waypoint x="1180" y="300" /><di:waypoint x="1230" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_BalanceToNotify_di" bpmnElement="Flow_BalanceToNotify">
+        <di:waypoint x="1330" y="300" /><di:waypoint x="1380" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_NotifyApprovedToEnd_di" bpmnElement="Flow_NotifyApprovedToEnd">
+        <di:waypoint x="1480" y="300" /><di:waypoint x="1532" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_BoundaryError_di" bpmnElement="Flow_BoundaryError">
+        <di:waypoint x="1280" y="358" /><di:waypoint x="1280" y="660" /><di:waypoint x="620" y="660" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_NotifyRejectedToEnd_di" bpmnElement="Flow_NotifyRejectedToEnd">
+        <di:waypoint x="840" y="480" /><di:waypoint x="840" y="522" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_NotifyInsufficientToEnd_di" bpmnElement="Flow_NotifyInsufficientToEnd">
+        <di:waypoint x="570" y="700" /><di:waypoint x="570" y="742" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>
